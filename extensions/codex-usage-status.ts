@@ -18,9 +18,7 @@ type RateLimitBucket = {
 
 type CodexUsageResponse = {
 	rate_limit?: RateLimitBucket | null;
-	code_review_rate_limit?: RateLimitBucket | null;
 	additional_rate_limits?: Record<string, unknown> | unknown[] | null;
-	[key: string]: unknown;
 };
 
 type UsageSnapshot = {
@@ -35,17 +33,15 @@ type PercentDisplayMode = "left" | "used";
 const EXTENSION_ID = "codex-usage";
 const AUTH_FILE = path.join(os.homedir(), ".pi", "agent", "auth.json");
 const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
-const SPARK_USAGE_URL = "https://chatgpt.com/api/codex/usage";
 const REFRESH_INTERVAL_MS = 60_000;
 
 const CODEX_LABEL = "Codex";
 const CODEX_SPARK_LABEL = "Codex Spark";
 const SPARK_MODEL_ID = "gpt-5.3-codex-spark";
+const SPARK_LIMIT_NAME = "GPT-5.3-Codex-Spark";
 const FIVE_HOUR_LABEL = "5h:";
 const SEVEN_DAY_LABEL = "7d:";
 const UNKNOWN_PERCENT = "--";
-
-const DEFAULT_PERCENT_DISPLAY_MODE: PercentDisplayMode = "left";
 
 const MISSING_AUTH_ERROR_PREFIX = "Missing openai-codex OAuth access/accountId";
 
@@ -63,29 +59,18 @@ function leftToUsedPercent(value: number | null | undefined): number | null {
 	return clampPercent(100 - value);
 }
 
-function formatPercent(value: number | null | undefined): string | null {
-	if (typeof value !== "number" || Number.isNaN(value)) return null;
-	return `${Math.round(clampPercent(value))}%`;
-}
-
-function formatPercentForMode(valueLeft: number | null, mode: PercentDisplayMode): string | null {
-	const displayValue = mode === "left" ? valueLeft : leftToUsedPercent(valueLeft);
-	const percentText = formatPercent(displayValue);
-	if (!percentText) return null;
-	return mode === "left" ? `${percentText} left` : `${percentText} used`;
-}
-
 function colorizePercent(
 	theme: ExtensionContext["ui"]["theme"],
 	valueLeft: number | null,
 	mode: PercentDisplayMode,
 ): string {
-	const text = formatPercentForMode(valueLeft, mode);
-	if (!text) return theme.fg("muted", UNKNOWN_PERCENT);
-
 	const displayValue = mode === "left" ? valueLeft : leftToUsedPercent(valueLeft);
-	if (typeof displayValue !== "number" || Number.isNaN(displayValue)) return theme.fg("muted", UNKNOWN_PERCENT);
+	if (typeof displayValue !== "number" || Number.isNaN(displayValue)) {
+		return theme.fg("muted", UNKNOWN_PERCENT);
+	}
 
+	const percentText = `${Math.round(clampPercent(displayValue))}%`;
+	const text = mode === "left" ? `${percentText} left` : `${percentText} used`;
 	if (mode === "left") {
 		if (displayValue <= 10) return theme.fg("error", text);
 		if (displayValue <= 25) return theme.fg("warning", text);
@@ -189,11 +174,9 @@ async function loadAuthCredentials(): Promise<{ accessToken: string; accountId: 
 	return { accessToken, accountId };
 }
 
-async function requestUsageJsonFromUrl(
-	url: string,
-	credentials: { accessToken: string; accountId: string },
-): Promise<CodexUsageResponse> {
-	const response = await fetch(url, {
+async function requestUsageJson(): Promise<CodexUsageResponse> {
+	const credentials = await loadAuthCredentials();
+	const response = await fetch(USAGE_URL, {
 		headers: {
 			accept: "*/*",
 			authorization: `Bearer ${credentials.accessToken}`,
@@ -201,16 +184,8 @@ async function requestUsageJsonFromUrl(
 		},
 	});
 
-	if (!response.ok) throw new Error(`Codex usage request failed (${response.status}) for ${url}`);
+	if (!response.ok) throw new Error(`Codex usage request failed (${response.status}) for ${USAGE_URL}`);
 	return (await response.json()) as CodexUsageResponse;
-}
-
-async function requestUsageJson(modelId: string | undefined): Promise<CodexUsageResponse> {
-	const credentials = await loadAuthCredentials();
-	if (isSparkModel(modelId)) {
-		return await requestUsageJsonFromUrl(SPARK_USAGE_URL, credentials);
-	}
-	return await requestUsageJsonFromUrl(USAGE_URL, credentials);
 }
 
 function asObject(value: unknown): Record<string, unknown> | null {
@@ -227,32 +202,11 @@ function normalizeRateLimitBucket(value: unknown): RateLimitBucket | null {
 	return record as RateLimitBucket;
 }
 
-function matchesSparkIdentifier(value: unknown): boolean {
-	if (typeof value !== "string") return false;
-	const normalized = value.trim().toLowerCase();
-	if (!normalized) return false;
-	return normalized === SPARK_MODEL_ID || normalized.includes("spark");
-}
-
-function extractSparkRateLimitFromEntry(value: unknown, keyHint?: string): RateLimitBucket | null {
+function extractSparkRateLimitFromEntry(value: unknown): RateLimitBucket | null {
 	const record = asObject(value);
 	if (!record) return null;
-
-	const idCandidates = [
-		keyHint,
-		record.model,
-		record.model_id,
-		record.modelId,
-		record.id,
-		record.name,
-		record.slug,
-		record.key,
-	];
-
-	const matchesSpark = idCandidates.some((candidate) => matchesSparkIdentifier(candidate));
-	if (!matchesSpark) return null;
-
-	return normalizeRateLimitBucket(record.rate_limit) ?? normalizeRateLimitBucket(record);
+	if (typeof record.limit_name !== "string" || record.limit_name.trim() !== SPARK_LIMIT_NAME) return null;
+	return normalizeRateLimitBucket(record.rate_limit);
 }
 
 function findSparkRateLimitBucket(data: CodexUsageResponse): RateLimitBucket | null {
@@ -265,17 +219,11 @@ function findSparkRateLimitBucket(data: CodexUsageResponse): RateLimitBucket | n
 	} else {
 		const additionalMap = asObject(additional);
 		if (additionalMap) {
-			for (const [key, value] of Object.entries(additionalMap)) {
-				const bucket = extractSparkRateLimitFromEntry(value, key) ?? (matchesSparkIdentifier(key) ? normalizeRateLimitBucket(value) : null);
+			for (const value of Object.values(additionalMap)) {
+				const bucket = extractSparkRateLimitFromEntry(value);
 				if (bucket) return bucket;
 			}
 		}
-	}
-
-	for (const [key, value] of Object.entries(data)) {
-		if (!matchesSparkIdentifier(key)) continue;
-		const bucket = normalizeRateLimitBucket(value) ?? extractSparkRateLimitFromEntry(value, key);
-		if (bucket) return bucket;
 	}
 
 	return null;
@@ -283,7 +231,7 @@ function findSparkRateLimitBucket(data: CodexUsageResponse): RateLimitBucket | n
 
 function selectRateLimitBucket(data: CodexUsageResponse, modelId: string | undefined): RateLimitBucket | null {
 	if (isSparkModel(modelId)) {
-		return findSparkRateLimitBucket(data) ?? normalizeRateLimitBucket(data.rate_limit);
+		return findSparkRateLimitBucket(data);
 	}
 	return normalizeRateLimitBucket(data.rate_limit);
 }
@@ -315,11 +263,6 @@ function parseUsageSnapshot(data: CodexUsageResponse, modelId: string | undefine
 	};
 }
 
-async function fetchUsageSnapshot(modelId: string | undefined): Promise<UsageSnapshot> {
-	const data = await requestUsageJson(modelId);
-	return parseUsageSnapshot(data, modelId);
-}
-
 function isMissingCodexAuthError(error: unknown): boolean {
 	if (!(error instanceof Error)) return false;
 	if (error.message.includes(MISSING_AUTH_ERROR_PREFIX)) return true;
@@ -333,7 +276,7 @@ function createStatusRefresher() {
 	let activeContext: ExtensionContext | undefined;
 	let isRefreshInFlight = false;
 	let queuedRefresh: { ctx: ExtensionContext; modelId: string | undefined } | null = null;
-	let percentDisplayMode: PercentDisplayMode = DEFAULT_PERCENT_DISPLAY_MODE;
+	let percentDisplayMode: PercentDisplayMode = "left";
 	let lastUsageSnapshot: UsageSnapshot | undefined;
 
 	async function updateFooterStatus(ctx: ExtensionContext, modelId = ctx.model?.id): Promise<void> {
@@ -344,7 +287,7 @@ function createStatusRefresher() {
 		}
 		isRefreshInFlight = true;
 		try {
-			const usage = await fetchUsageSnapshot(modelId);
+			const usage = parseUsageSnapshot(await requestUsageJson(), modelId);
 			lastUsageSnapshot = usage;
 			ctx.ui.setStatus(EXTENSION_ID, formatStatus(ctx, usage, percentDisplayMode, modelId));
 		} catch (error) {
@@ -367,9 +310,9 @@ function createStatusRefresher() {
 		}
 	}
 
-	async function refreshFor(ctx: ExtensionContext, modelId = ctx.model?.id): Promise<void> {
+	function refreshFor(ctx: ExtensionContext, modelId = ctx.model?.id): Promise<void> {
 		activeContext = ctx;
-		await updateFooterStatus(ctx, modelId);
+		return updateFooterStatus(ctx, modelId);
 	}
 
 	function startAutoRefresh(): void {
@@ -433,37 +376,35 @@ function createStatusRefresher() {
 export default function (pi: ExtensionAPI) {
 	const refresher = createStatusRefresher();
 
-	function registerRefreshEvent(eventName: "turn_end" | "session_switch"): void {
-		pi.on(eventName, (_event, ctx) => {
-			void refresher.refreshFor(ctx);
-		});
-	}
-
 	pi.on("session_start", (_event, ctx) => {
 		void refresher.setLoadingStatus(ctx).then(() => refresher.refreshFor(ctx));
 		refresher.startAutoRefresh();
 	});
 
-	registerRefreshEvent("turn_end");
-	registerRefreshEvent("session_switch");
+	pi.on("turn_end", (_event, ctx) => {
+		void refresher.refreshFor(ctx);
+	});
+
+	pi.on("session_switch", (_event, ctx) => {
+		void refresher.refreshFor(ctx);
+	});
+
 	pi.on("model_select", (event, ctx) => {
 		void refresher.refreshFor(ctx, event.model.id);
 	});
 
-	pi.on("session_shutdown", async (_event, ctx) => {
+	pi.on("session_shutdown", (_event, ctx) => {
 		refresher.stopAutoRefresh(ctx);
 	});
 
 	pi.registerCommand("codex-usage-refresh", {
 		description: "Refresh ChatGPT Codex usage footer status",
-		handler: async (_args, ctx) => {
-			await refresher.refreshFor(ctx);
-		},
+		handler: (_args, ctx) => refresher.refreshFor(ctx),
 	});
 
 	pi.registerCommand("codex-usage-mode", {
 		description: "Toggle Codex usage display mode, or set it explicitly: left | used",
-		getArgumentCompletions: (argumentPrefix) => getModeArgumentCompletions(argumentPrefix),
+		getArgumentCompletions: getModeArgumentCompletions,
 		handler: async (args, ctx) => {
 			const nextMode = parseModeCommandArgument(args, refresher.getPercentDisplayMode());
 			if (!nextMode) return;
