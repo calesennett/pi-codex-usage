@@ -1,7 +1,11 @@
 {
   "name": "@calesennett/pi-codex-usage",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Codex usage footer extension for pi",
-  "keywords": ["pi-package", "pi-extension", "codex"],
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "codex"
+  ],
   "license": "MIT"
 }

@@ -9,7 +9,6 @@ Codex usage status extension for [pi](https://github.com/badlogic/pi-mono/tree/m
 Adds a footer status entry showing Codex usage windows:
 - 5h % left (default)
 - 7d % left (default)
-- optional 7d reset countdown
 - optional `% used` mode via `/codex-usage-mode used`
 - automatically switches label to `Codex Spark` when model `gpt-5.3-codex-spark` is selected
 - when on Spark, uses Spark-specific buckets from `additional_rate_limits` (e.g. `GPT-5.3-Codex-Spark` / `limit_name`)
