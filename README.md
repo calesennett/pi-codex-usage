@@ -2,6 +2,12 @@
 
 ![pi-codex-usage screenshot](https://raw.githubusercontent.com/calesennett/pi-codex-usage/main/assets/pi-codex-usage-screen.png)
 
+## Installation instructions
+
+```bash
+pi install npm:@calesennett/pi-codex-usage
+```
+
 Codex usage status extension for [pi](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent).
 
 ## What it does
