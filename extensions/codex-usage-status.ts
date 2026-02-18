@@ -24,11 +24,13 @@ type CodexUsageResponse = {
 type UsageSnapshot = {
 	fiveHourLeftPercent: number | null;
 	sevenDayLeftPercent: number | null;
+	fiveHourResetInSeconds: number | null;
 	sevenDayResetInSeconds: number | null;
 	isLimited: boolean;
 };
 
 type PercentDisplayMode = "left" | "used";
+type ResetWindowMode = "5h" | "7d";
 
 const EXTENSION_ID = "codex-usage";
 const AUTH_FILE = path.join(os.homedir(), ".pi", "agent", "auth.json");
@@ -104,16 +106,24 @@ function getStatusLabel(modelId: string | undefined): string {
 	return isSparkModel(modelId) ? CODEX_SPARK_LABEL : CODEX_LABEL;
 }
 
-function formatStatus(ctx: ExtensionContext, usage: UsageSnapshot, mode: PercentDisplayMode, modelId: string | undefined): string {
+function formatStatus(
+	ctx: ExtensionContext,
+	usage: UsageSnapshot,
+	mode: PercentDisplayMode,
+	resetWindowMode: ResetWindowMode,
+	modelId: string | undefined,
+): string {
 	const theme = ctx.ui.theme;
 	const label = getStatusLabel(modelId);
 	const title = usage.isLimited ? theme.fg("error", label) : theme.fg("dim", label);
 	const fiveHourText = colorizePercent(theme, usage.fiveHourLeftPercent, mode);
 	const sevenDayText = colorizePercent(theme, usage.sevenDayLeftPercent, mode);
-	const resetText = formatResetCountdown(usage.sevenDayResetInSeconds);
-	const sevenDayReset = resetText ? theme.fg("dim", ` (↺${resetText})`) : "";
+	const resetSeconds = resetWindowMode === "5h" ? usage.fiveHourResetInSeconds : usage.sevenDayResetInSeconds;
+	const resetText = formatResetCountdown(resetSeconds);
+	const resetLabel = resetWindowMode === "5h" ? FIVE_HOUR_LABEL : SEVEN_DAY_LABEL;
+	const resetStatus = resetText ? theme.fg("dim", ` (${resetLabel}↺${resetText})`) : "";
 
-	return `${title} ${theme.fg("dim", FIVE_HOUR_LABEL)}${fiveHourText} ${theme.fg("dim", SEVEN_DAY_LABEL)}${sevenDayText}${sevenDayReset}`;
+	return `${title} ${theme.fg("dim", FIVE_HOUR_LABEL)}${fiveHourText} ${theme.fg("dim", SEVEN_DAY_LABEL)}${sevenDayText}${resetStatus}`;
 }
 
 function parseModeCommandArgument(args: string, currentMode: PercentDisplayMode): PercentDisplayMode | null {
@@ -140,6 +150,38 @@ function getModeArgumentCompletions(argumentPrefix: string) {
 			value: "toggle",
 			label: "toggle",
 			description: 'Flips between "... left" and "... used"',
+		},
+	];
+
+	if (!prefix) return items;
+	const filtered = items.filter((item) => item.value.startsWith(prefix));
+	return filtered.length > 0 ? filtered : null;
+}
+
+function parseResetWindowCommandArgument(args: string, currentWindow: ResetWindowMode): ResetWindowMode | null {
+	const token = args.trim().toLowerCase().split(/\s+/)[0] ?? "";
+	if (!token || token === "toggle") return currentWindow === "7d" ? "5h" : "7d";
+	if (token === "5h" || token === "7d") return token;
+	return null;
+}
+
+function getResetWindowArgumentCompletions(argumentPrefix: string) {
+	const prefix = argumentPrefix.trim().toLowerCase();
+	const items = [
+		{
+			value: "5h",
+			label: "5h",
+			description: 'Shows reset countdown as "(5h:↺...)"',
+		},
+		{
+			value: "7d",
+			label: "7d",
+			description: 'Shows reset countdown as "(7d:↺...)"',
+		},
+		{
+			value: "toggle",
+			label: "toggle",
+			description: 'Flips reset countdown window between "5h" and "7d"',
 		},
 	];
 
@@ -251,13 +293,15 @@ function getResetSeconds(window: UsageWindow | null | undefined): number | null 
 
 function parseUsageSnapshot(data: CodexUsageResponse, modelId: string | undefined): UsageSnapshot {
 	const selectedBucket = selectRateLimitBucket(data, modelId);
-	const fiveHourValue = selectedBucket?.primary_window?.used_percent;
+	const fiveHourWindow = selectedBucket?.primary_window;
+	const fiveHourValue = fiveHourWindow?.used_percent;
 	const sevenDayWindow = selectedBucket?.secondary_window;
 	const sevenDayValue = sevenDayWindow?.used_percent;
 
 	return {
 		fiveHourLeftPercent: usedToLeftPercent(fiveHourValue),
 		sevenDayLeftPercent: usedToLeftPercent(sevenDayValue),
+		fiveHourResetInSeconds: getResetSeconds(fiveHourWindow),
 		sevenDayResetInSeconds: getResetSeconds(sevenDayWindow),
 		isLimited: selectedBucket?.limit_reached === true || selectedBucket?.allowed === false,
 	};
@@ -277,6 +321,7 @@ function createStatusRefresher() {
 	let isRefreshInFlight = false;
 	let queuedRefresh: { ctx: ExtensionContext; modelId: string | undefined } | null = null;
 	let percentDisplayMode: PercentDisplayMode = "left";
+	let resetWindowMode: ResetWindowMode = "7d";
 	let lastUsageSnapshot: UsageSnapshot | undefined;
 
 	async function updateFooterStatus(ctx: ExtensionContext, modelId = ctx.model?.id): Promise<void> {
@@ -289,7 +334,7 @@ function createStatusRefresher() {
 		try {
 			const usage = parseUsageSnapshot(await requestUsageJson(), modelId);
 			lastUsageSnapshot = usage;
-			ctx.ui.setStatus(EXTENSION_ID, formatStatus(ctx, usage, percentDisplayMode, modelId));
+			ctx.ui.setStatus(EXTENSION_ID, formatStatus(ctx, usage, percentDisplayMode, resetWindowMode, modelId));
 		} catch (error) {
 			if (isMissingCodexAuthError(error)) {
 				lastUsageSnapshot = undefined;
@@ -356,9 +401,17 @@ function createStatusRefresher() {
 		return percentDisplayMode;
 	}
 
+	function setResetWindowMode(mode: ResetWindowMode): void {
+		resetWindowMode = mode;
+	}
+
+	function getResetWindowMode(): ResetWindowMode {
+		return resetWindowMode;
+	}
+
 	function renderFromLastSnapshot(ctx: ExtensionContext): boolean {
 		if (!ctx.hasUI || !lastUsageSnapshot) return false;
-		ctx.ui.setStatus(EXTENSION_ID, formatStatus(ctx, lastUsageSnapshot, percentDisplayMode, ctx.model?.id));
+		ctx.ui.setStatus(EXTENSION_ID, formatStatus(ctx, lastUsageSnapshot, percentDisplayMode, resetWindowMode, ctx.model?.id));
 		return true;
 	}
 
@@ -369,6 +422,8 @@ function createStatusRefresher() {
 		setLoadingStatus,
 		setPercentDisplayMode,
 		getPercentDisplayMode,
+		setResetWindowMode,
+		getResetWindowMode,
 		renderFromLastSnapshot,
 	};
 }
@@ -397,11 +452,6 @@ export default function (pi: ExtensionAPI) {
 		refresher.stopAutoRefresh(ctx);
 	});
 
-	pi.registerCommand("codex-usage-refresh", {
-		description: "Refresh ChatGPT Codex usage footer status",
-		handler: (_args, ctx) => refresher.refreshFor(ctx),
-	});
-
 	pi.registerCommand("codex-usage-mode", {
 		description: "Toggle Codex usage display mode, or set it explicitly: left | used",
 		getArgumentCompletions: getModeArgumentCompletions,
@@ -410,6 +460,20 @@ export default function (pi: ExtensionAPI) {
 			if (!nextMode) return;
 
 			refresher.setPercentDisplayMode(nextMode);
+			if (!refresher.renderFromLastSnapshot(ctx)) {
+				await refresher.refreshFor(ctx);
+			}
+		},
+	});
+
+	pi.registerCommand("codex-usage-reset-window", {
+		description: "Toggle reset countdown window, or set it explicitly: 5h | 7d",
+		getArgumentCompletions: getResetWindowArgumentCompletions,
+		handler: async (args, ctx) => {
+			const nextWindow = parseResetWindowCommandArgument(args, refresher.getResetWindowMode());
+			if (!nextWindow) return;
+
+			refresher.setResetWindowMode(nextWindow);
 			if (!refresher.renderFromLastSnapshot(ctx)) {
 				await refresher.refreshFor(ctx);
 			}
