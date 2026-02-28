@@ -1,6 +1,6 @@
 {
   "name": "@calesennett/pi-codex-usage",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "Codex usage footer extension for pi",
   "keywords": [
     "pi-package",
