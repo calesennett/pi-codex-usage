@@ -32,8 +32,21 @@ type UsageSnapshot = {
 type PercentDisplayMode = "left" | "used";
 type ResetWindowMode = "5h" | "7d";
 
+type ExtensionPreferences = {
+	usageMode: PercentDisplayMode;
+	refreshWindow: ResetWindowMode;
+};
+
 const EXTENSION_ID = "codex-usage";
-const AUTH_FILE = path.join(os.homedir(), ".pi", "agent", "auth.json");
+const SETTINGS_KEY = "pi-codex-usage";
+const DEFAULT_PERCENT_DISPLAY_MODE: PercentDisplayMode = "left";
+const DEFAULT_RESET_WINDOW_MODE: ResetWindowMode = "7d";
+
+const agentDirFromEnv = process.env.PI_CODING_AGENT_DIR?.trim();
+const AGENT_DIR = agentDirFromEnv ? agentDirFromEnv : path.join(os.homedir(), ".pi", "agent");
+const AUTH_FILE = path.join(AGENT_DIR, "auth.json");
+const SETTINGS_FILE = path.join(AGENT_DIR, "settings.json");
+
 const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const REFRESH_INTERVAL_MS = 60_000;
 
@@ -235,6 +248,54 @@ function asObject(value: unknown): Record<string, unknown> | null {
 	return value as Record<string, unknown>;
 }
 
+function isPercentDisplayMode(value: unknown): value is PercentDisplayMode {
+	return value === "left" || value === "used";
+}
+
+function isResetWindowMode(value: unknown): value is ResetWindowMode {
+	return value === "5h" || value === "7d";
+}
+
+function normalizeExtensionPreferences(value: unknown): ExtensionPreferences {
+	const settings = asObject(value);
+	const usageModeValue = settings?.usageMode;
+	const refreshWindowValue = settings?.refreshWindow;
+	const usageMode = isPercentDisplayMode(usageModeValue) ? usageModeValue : DEFAULT_PERCENT_DISPLAY_MODE;
+	const refreshWindow = isResetWindowMode(refreshWindowValue) ? refreshWindowValue : DEFAULT_RESET_WINDOW_MODE;
+	return { usageMode, refreshWindow };
+}
+
+async function readAgentSettings(): Promise<Record<string, unknown>> {
+	try {
+		const raw = await fs.readFile(SETTINGS_FILE, "utf8");
+		const parsed = JSON.parse(raw) as unknown;
+		return asObject(parsed) ?? {};
+	} catch (error) {
+		const errorWithCode = error as Error & { code?: string };
+		if (errorWithCode.code === "ENOENT") return {};
+		throw error;
+	}
+}
+
+async function writeAgentSettings(settings: Record<string, unknown>): Promise<void> {
+	await fs.mkdir(path.dirname(SETTINGS_FILE), { recursive: true });
+	await fs.writeFile(SETTINGS_FILE, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+}
+
+async function loadPersistedPreferences(): Promise<{ preferences: ExtensionPreferences; needsWrite: boolean }> {
+	const settings = await readAgentSettings();
+	const preferences = normalizeExtensionPreferences(settings[SETTINGS_KEY]);
+	const existing = asObject(settings[SETTINGS_KEY]);
+	const needsWrite = !existing || existing.usageMode !== preferences.usageMode || existing.refreshWindow !== preferences.refreshWindow;
+	return { preferences, needsWrite };
+}
+
+async function persistPreferences(preferences: ExtensionPreferences): Promise<void> {
+	const settings = await readAgentSettings();
+	settings[SETTINGS_KEY] = preferences;
+	await writeAgentSettings(settings);
+}
+
 function normalizeRateLimitBucket(value: unknown): RateLimitBucket | null {
 	const record = asObject(value);
 	if (!record) return null;
@@ -320,8 +381,8 @@ function createStatusRefresher() {
 	let activeContext: ExtensionContext | undefined;
 	let isRefreshInFlight = false;
 	let queuedRefresh: { ctx: ExtensionContext; modelId: string | undefined } | null = null;
-	let percentDisplayMode: PercentDisplayMode = "left";
-	let resetWindowMode: ResetWindowMode = "7d";
+	let percentDisplayMode: PercentDisplayMode = DEFAULT_PERCENT_DISPLAY_MODE;
+	let resetWindowMode: ResetWindowMode = DEFAULT_RESET_WINDOW_MODE;
 	let lastUsageSnapshot: UsageSnapshot | undefined;
 
 	async function updateFooterStatus(ctx: ExtensionContext, modelId = ctx.model?.id): Promise<void> {
@@ -428,12 +489,77 @@ function createStatusRefresher() {
 	};
 }
 
+function formatErrorMessage(error: unknown): string {
+	if (error instanceof Error) return error.message;
+	return String(error);
+}
+
 export default function (pi: ExtensionAPI) {
 	const refresher = createStatusRefresher();
+	let settingsWriteQueue: Promise<void> = Promise.resolve();
+	let applyingPersistedPreferences = false;
+	let modeChangedDuringStartupLoad = false;
+	let windowChangedDuringStartupLoad = false;
+
+	function queuePersistCurrentPreferences(ctx: ExtensionContext): void {
+		const preferences: ExtensionPreferences = {
+			usageMode: refresher.getPercentDisplayMode(),
+			refreshWindow: refresher.getResetWindowMode(),
+		};
+
+		settingsWriteQueue = settingsWriteQueue
+			.catch(() => undefined)
+			.then(() => persistPreferences(preferences));
+
+		void settingsWriteQueue.catch((error) => {
+			if (!ctx.hasUI) return;
+			ctx.ui.notify(
+				`pi-codex-usage: failed to write ${SETTINGS_FILE}: ${formatErrorMessage(error)}`,
+				"warning",
+			);
+		});
+	}
+
+	async function applyPersistedPreferences(ctx: ExtensionContext): Promise<void> {
+		applyingPersistedPreferences = true;
+		try {
+			const { preferences, needsWrite } = await loadPersistedPreferences();
+			if (!modeChangedDuringStartupLoad) {
+				refresher.setPercentDisplayMode(preferences.usageMode);
+			}
+			if (!windowChangedDuringStartupLoad) {
+				refresher.setResetWindowMode(preferences.refreshWindow);
+			}
+			if (needsWrite) {
+				queuePersistCurrentPreferences(ctx);
+			}
+		} catch (error) {
+			if (!modeChangedDuringStartupLoad) {
+				refresher.setPercentDisplayMode(DEFAULT_PERCENT_DISPLAY_MODE);
+			}
+			if (!windowChangedDuringStartupLoad) {
+				refresher.setResetWindowMode(DEFAULT_RESET_WINDOW_MODE);
+			}
+			if (!ctx.hasUI) return;
+
+			ctx.ui.notify(
+				`pi-codex-usage: failed to load ${SETTINGS_FILE}, using defaults (${DEFAULT_PERCENT_DISPLAY_MODE}, ${DEFAULT_RESET_WINDOW_MODE}): ${formatErrorMessage(error)}`,
+				"warning",
+			);
+		} finally {
+			applyingPersistedPreferences = false;
+			modeChangedDuringStartupLoad = false;
+			windowChangedDuringStartupLoad = false;
+		}
+	}
 
 	pi.on("session_start", (_event, ctx) => {
-		void refresher.setLoadingStatus(ctx).then(() => refresher.refreshFor(ctx));
 		refresher.startAutoRefresh();
+		void (async () => {
+			await applyPersistedPreferences(ctx);
+			await refresher.setLoadingStatus(ctx);
+			await refresher.refreshFor(ctx);
+		})();
 	});
 
 	pi.on("turn_end", (_event, ctx) => {
@@ -459,7 +585,9 @@ export default function (pi: ExtensionAPI) {
 			const nextMode = parseModeCommandArgument(args, refresher.getPercentDisplayMode());
 			if (!nextMode) return;
 
+			if (applyingPersistedPreferences) modeChangedDuringStartupLoad = true;
 			refresher.setPercentDisplayMode(nextMode);
+			queuePersistCurrentPreferences(ctx);
 			if (!refresher.renderFromLastSnapshot(ctx)) {
 				await refresher.refreshFor(ctx);
 			}
@@ -473,7 +601,9 @@ export default function (pi: ExtensionAPI) {
 			const nextWindow = parseResetWindowCommandArgument(args, refresher.getResetWindowMode());
 			if (!nextWindow) return;
 
+			if (applyingPersistedPreferences) windowChangedDuringStartupLoad = true;
 			refresher.setResetWindowMode(nextWindow);
+			queuePersistCurrentPreferences(ctx);
 			if (!refresher.renderFromLastSnapshot(ctx)) {
 				await refresher.refreshFor(ctx);
 			}

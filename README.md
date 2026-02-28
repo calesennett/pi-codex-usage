@@ -21,6 +21,23 @@ pi install npm:@calesennett/pi-codex-usage
 | `/codex-usage-reset-window 7d` | Show reset countdown for the 7d window. |
 | `/codex-usage-reset-window 5h` | Show reset countdown for the 5h window. |
 
+## Settings
+
+The extension persists display preferences in pi's `settings.json` under:
+
+```json
+{
+  "pi-codex-usage": {
+    "usageMode": "left",
+    "refreshWindow": "7d"
+  }
+}
+```
+
+- Settings file path: `$PI_CODING_AGENT_DIR/settings.json`
+- Fallback when env var is unset: `~/.pi/agent/settings.json`
+- Defaults are written on first load: `usageMode: "left"`, `refreshWindow: "7d"`
+
 Example outputs:
 
 - `/codex-usage-mode left` → `Codex 5h:81% left 7d:64% left (7d:↺22h28m)`
