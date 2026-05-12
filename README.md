@@ -14,6 +14,9 @@ pi install npm:@calesennett/pi-codex-usage
 
 | Command | Effect |
 | --- | --- |
+| `/codex-usage` | Toggle the footer status on/off. |
+| `/codex-usage on` | Show the footer status and resume refreshes. |
+| `/codex-usage off` | Hide the footer status and pause refreshes. |
 | `/codex-usage-mode` | Toggle display mode (`left` ↔ `used`). |
 | `/codex-usage-mode left` | Show percent left in each window. |
 | `/codex-usage-mode used` | Show percent used in each window. |
@@ -28,6 +31,7 @@ The extension persists display preferences in pi's `settings.json` under:
 ```json
 {
   "pi-codex-usage": {
+    "enabled": true,
     "usageMode": "left",
     "refreshWindow": "7d"
   }
@@ -36,9 +40,9 @@ The extension persists display preferences in pi's `settings.json` under:
 
 - Settings file path: `$PI_CODING_AGENT_DIR/settings.json`
 - Fallback when env var is unset: `~/.pi/agent/settings.json`
-- Defaults are written on first load: `usageMode: "left"`, `refreshWindow: "7d"`
+- Defaults are written on first load: `enabled: true`, `usageMode: "left"`, `refreshWindow: "7d"`
 
 Example outputs:
 
-- `/codex-usage-mode left` → `Codex 5h:81% left 7d:64% left (7d:↺22h28m)`
-- `/codex-usage-mode used` → `Codex 5h:19% used 7d:36% used (7d:↺22h28m)`
+- `/codex-usage-mode left` → `Codex 5h:81% left 7d:64% left (7d: 22h28m)`
+- `/codex-usage-mode used` → `Codex 5h:19% used 7d:36% used (7d: 22h28m)`
