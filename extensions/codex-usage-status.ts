@@ -33,12 +33,14 @@ type PercentDisplayMode = "left" | "used";
 type ResetWindowMode = "5h" | "7d";
 
 type ExtensionPreferences = {
+	enabled: boolean;
 	usageMode: PercentDisplayMode;
 	refreshWindow: ResetWindowMode;
 };
 
 const EXTENSION_ID = "codex-usage";
 const SETTINGS_KEY = "pi-codex-usage";
+const DEFAULT_ENABLED = true;
 const DEFAULT_PERCENT_DISPLAY_MODE: PercentDisplayMode = "left";
 const DEFAULT_RESET_WINDOW_MODE: ResetWindowMode = "7d";
 
@@ -134,7 +136,7 @@ function formatStatus(
 	const resetSeconds = resetWindowMode === "5h" ? usage.fiveHourResetInSeconds : usage.sevenDayResetInSeconds;
 	const resetText = formatResetCountdown(resetSeconds);
 	const resetLabel = resetWindowMode === "5h" ? FIVE_HOUR_LABEL : SEVEN_DAY_LABEL;
-	const resetStatus = resetText ? theme.fg("dim", ` (${resetLabel}↺${resetText})`) : "";
+	const resetStatus = resetText ? theme.fg("dim", ` (${resetLabel} ${resetText})`) : "";
 
 	return `${title} ${theme.fg("dim", FIVE_HOUR_LABEL)}${fiveHourText} ${theme.fg("dim", SEVEN_DAY_LABEL)}${sevenDayText}${resetStatus}`;
 }
@@ -184,17 +186,50 @@ function getResetWindowArgumentCompletions(argumentPrefix: string) {
 		{
 			value: "5h",
 			label: "5h",
-			description: 'Shows reset countdown as "(5h:↺...)"',
+			description: 'Shows reset countdown as "(5h: ...)"',
 		},
 		{
 			value: "7d",
 			label: "7d",
-			description: 'Shows reset countdown as "(7d:↺...)"',
+			description: 'Shows reset countdown as "(7d: ...)"',
 		},
 		{
 			value: "toggle",
 			label: "toggle",
 			description: 'Flips reset countdown window between "5h" and "7d"',
+		},
+	];
+
+	if (!prefix) return items;
+	const filtered = items.filter((item) => item.value.startsWith(prefix));
+	return filtered.length > 0 ? filtered : null;
+}
+
+function parseEnabledCommandArgument(args: string, currentEnabled: boolean): boolean | null {
+	const token = args.trim().toLowerCase().split(/\s+/)[0] ?? "";
+	if (!token || token === "toggle") return !currentEnabled;
+	if (["on", "enable", "enabled", "true", "1", "start"].includes(token)) return true;
+	if (["off", "disable", "disabled", "false", "0", "stop"].includes(token)) return false;
+	return null;
+}
+
+function getEnabledArgumentCompletions(argumentPrefix: string) {
+	const prefix = argumentPrefix.trim().toLowerCase();
+	const items = [
+		{
+			value: "on",
+			label: "on",
+			description: "Show the Codex usage footer status and resume refreshes",
+		},
+		{
+			value: "off",
+			label: "off",
+			description: "Hide the Codex usage footer status and pause refreshes",
+		},
+		{
+			value: "toggle",
+			label: "toggle",
+			description: "Toggle the Codex usage footer status on or off",
 		},
 	];
 
@@ -258,11 +293,13 @@ function isResetWindowMode(value: unknown): value is ResetWindowMode {
 
 function normalizeExtensionPreferences(value: unknown): ExtensionPreferences {
 	const settings = asObject(value);
+	const enabledValue = settings?.enabled;
 	const usageModeValue = settings?.usageMode;
 	const refreshWindowValue = settings?.refreshWindow;
+	const enabled = typeof enabledValue === "boolean" ? enabledValue : DEFAULT_ENABLED;
 	const usageMode = isPercentDisplayMode(usageModeValue) ? usageModeValue : DEFAULT_PERCENT_DISPLAY_MODE;
 	const refreshWindow = isResetWindowMode(refreshWindowValue) ? refreshWindowValue : DEFAULT_RESET_WINDOW_MODE;
-	return { usageMode, refreshWindow };
+	return { enabled, usageMode, refreshWindow };
 }
 
 async function readAgentSettings(): Promise<Record<string, unknown>> {
@@ -286,7 +323,11 @@ async function loadPersistedPreferences(): Promise<{ preferences: ExtensionPrefe
 	const settings = await readAgentSettings();
 	const preferences = normalizeExtensionPreferences(settings[SETTINGS_KEY]);
 	const existing = asObject(settings[SETTINGS_KEY]);
-	const needsWrite = !existing || existing.usageMode !== preferences.usageMode || existing.refreshWindow !== preferences.refreshWindow;
+	const needsWrite =
+		!existing ||
+		existing.enabled !== preferences.enabled ||
+		existing.usageMode !== preferences.usageMode ||
+		existing.refreshWindow !== preferences.refreshWindow;
 	return { preferences, needsWrite };
 }
 
@@ -381,12 +422,19 @@ function createStatusRefresher() {
 	let activeContext: ExtensionContext | undefined;
 	let isRefreshInFlight = false;
 	let queuedRefresh: { ctx: ExtensionContext; modelId: string | undefined } | null = null;
+	let enabled = DEFAULT_ENABLED;
 	let percentDisplayMode: PercentDisplayMode = DEFAULT_PERCENT_DISPLAY_MODE;
 	let resetWindowMode: ResetWindowMode = DEFAULT_RESET_WINDOW_MODE;
 	let lastUsageSnapshot: UsageSnapshot | undefined;
 
 	async function updateFooterStatus(ctx: ExtensionContext, modelId = ctx.model?.id): Promise<void> {
 		if (!ctx.hasUI) return;
+		if (!enabled) {
+			queuedRefresh = null;
+			lastUsageSnapshot = undefined;
+			ctx.ui.setStatus(EXTENSION_ID, undefined);
+			return;
+		}
 		if (isRefreshInFlight) {
 			queuedRefresh = { ctx, modelId };
 			return;
@@ -394,9 +442,19 @@ function createStatusRefresher() {
 		isRefreshInFlight = true;
 		try {
 			const usage = parseUsageSnapshot(await requestUsageJson(), modelId);
+			if (!enabled) {
+				lastUsageSnapshot = undefined;
+				ctx.ui.setStatus(EXTENSION_ID, undefined);
+				return;
+			}
 			lastUsageSnapshot = usage;
 			ctx.ui.setStatus(EXTENSION_ID, formatStatus(ctx, usage, percentDisplayMode, resetWindowMode, modelId));
 		} catch (error) {
+			if (!enabled) {
+				lastUsageSnapshot = undefined;
+				ctx.ui.setStatus(EXTENSION_ID, undefined);
+				return;
+			}
 			if (isMissingCodexAuthError(error)) {
 				lastUsageSnapshot = undefined;
 				ctx.ui.setStatus(EXTENSION_ID, undefined);
@@ -424,7 +482,7 @@ function createStatusRefresher() {
 	function startAutoRefresh(): void {
 		if (refreshTimer) clearInterval(refreshTimer);
 		refreshTimer = setInterval(() => {
-			if (!activeContext) return;
+			if (!activeContext || !enabled) return;
 			void updateFooterStatus(activeContext);
 		}, REFRESH_INTERVAL_MS);
 		refreshTimer.unref?.();
@@ -440,6 +498,10 @@ function createStatusRefresher() {
 
 	async function setLoadingStatus(ctx: ExtensionContext): Promise<void> {
 		if (!ctx.hasUI) return;
+		if (!enabled) {
+			ctx.ui.setStatus(EXTENSION_ID, undefined);
+			return;
+		}
 
 		try {
 			await loadAuthCredentials();
@@ -452,6 +514,19 @@ function createStatusRefresher() {
 
 		const loadingStatus = `${getStatusLabel(ctx.model?.id)} loading...`;
 		ctx.ui.setStatus(EXTENSION_ID, ctx.ui.theme.fg("dim", loadingStatus));
+	}
+
+	function setEnabled(nextEnabled: boolean): void {
+		enabled = nextEnabled;
+		if (!enabled) {
+			queuedRefresh = null;
+			lastUsageSnapshot = undefined;
+			activeContext?.ui.setStatus(EXTENSION_ID, undefined);
+		}
+	}
+
+	function isEnabled(): boolean {
+		return enabled;
 	}
 
 	function setPercentDisplayMode(mode: PercentDisplayMode): void {
@@ -471,7 +546,7 @@ function createStatusRefresher() {
 	}
 
 	function renderFromLastSnapshot(ctx: ExtensionContext): boolean {
-		if (!ctx.hasUI || !lastUsageSnapshot) return false;
+		if (!ctx.hasUI || !enabled || !lastUsageSnapshot) return false;
 		ctx.ui.setStatus(EXTENSION_ID, formatStatus(ctx, lastUsageSnapshot, percentDisplayMode, resetWindowMode, ctx.model?.id));
 		return true;
 	}
@@ -481,6 +556,8 @@ function createStatusRefresher() {
 		startAutoRefresh,
 		stopAutoRefresh,
 		setLoadingStatus,
+		setEnabled,
+		isEnabled,
 		setPercentDisplayMode,
 		getPercentDisplayMode,
 		setResetWindowMode,
@@ -498,11 +575,13 @@ export default function (pi: ExtensionAPI) {
 	const refresher = createStatusRefresher();
 	let settingsWriteQueue: Promise<void> = Promise.resolve();
 	let applyingPersistedPreferences = false;
+	let enabledChangedDuringStartupLoad = false;
 	let modeChangedDuringStartupLoad = false;
 	let windowChangedDuringStartupLoad = false;
 
 	function queuePersistCurrentPreferences(ctx: ExtensionContext): void {
 		const preferences: ExtensionPreferences = {
+			enabled: refresher.isEnabled(),
 			usageMode: refresher.getPercentDisplayMode(),
 			refreshWindow: refresher.getResetWindowMode(),
 		};
@@ -524,6 +603,9 @@ export default function (pi: ExtensionAPI) {
 		applyingPersistedPreferences = true;
 		try {
 			const { preferences, needsWrite } = await loadPersistedPreferences();
+			if (!enabledChangedDuringStartupLoad) {
+				refresher.setEnabled(preferences.enabled);
+			}
 			if (!modeChangedDuringStartupLoad) {
 				refresher.setPercentDisplayMode(preferences.usageMode);
 			}
@@ -534,6 +616,9 @@ export default function (pi: ExtensionAPI) {
 				queuePersistCurrentPreferences(ctx);
 			}
 		} catch (error) {
+			if (!enabledChangedDuringStartupLoad) {
+				refresher.setEnabled(DEFAULT_ENABLED);
+			}
 			if (!modeChangedDuringStartupLoad) {
 				refresher.setPercentDisplayMode(DEFAULT_PERCENT_DISPLAY_MODE);
 			}
@@ -543,11 +628,12 @@ export default function (pi: ExtensionAPI) {
 			if (!ctx.hasUI) return;
 
 			ctx.ui.notify(
-				`pi-codex-usage: failed to load ${SETTINGS_FILE}, using defaults (${DEFAULT_PERCENT_DISPLAY_MODE}, ${DEFAULT_RESET_WINDOW_MODE}): ${formatErrorMessage(error)}`,
+				`pi-codex-usage: failed to load ${SETTINGS_FILE}, using defaults (enabled: ${DEFAULT_ENABLED}, usageMode: ${DEFAULT_PERCENT_DISPLAY_MODE}, refreshWindow: ${DEFAULT_RESET_WINDOW_MODE}): ${formatErrorMessage(error)}`,
 				"warning",
 			);
 		} finally {
 			applyingPersistedPreferences = false;
+			enabledChangedDuringStartupLoad = false;
 			modeChangedDuringStartupLoad = false;
 			windowChangedDuringStartupLoad = false;
 		}
@@ -563,19 +649,42 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("turn_end", (_event, ctx) => {
+		if (!refresher.isEnabled()) return;
 		void refresher.refreshFor(ctx);
 	});
 
 	pi.on("session_switch", (_event, ctx) => {
+		if (!refresher.isEnabled()) return;
 		void refresher.refreshFor(ctx);
 	});
 
 	pi.on("model_select", (event, ctx) => {
+		if (!refresher.isEnabled()) return;
 		void refresher.refreshFor(ctx, event.model.id);
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
 		refresher.stopAutoRefresh(ctx);
+	});
+
+	pi.registerCommand("codex-usage", {
+		description: "Toggle Codex usage footer, or set it explicitly: on | off",
+		getArgumentCompletions: getEnabledArgumentCompletions,
+		handler: async (args, ctx) => {
+			const nextEnabled = parseEnabledCommandArgument(args, refresher.isEnabled());
+			if (nextEnabled === null) return;
+
+			if (applyingPersistedPreferences) enabledChangedDuringStartupLoad = true;
+			refresher.setEnabled(nextEnabled);
+			queuePersistCurrentPreferences(ctx);
+
+			if (nextEnabled) {
+				await refresher.setLoadingStatus(ctx);
+				await refresher.refreshFor(ctx);
+			} else if (ctx.hasUI) {
+				ctx.ui.notify("Codex usage footer disabled", "info");
+			}
+		},
 	});
 
 	pi.registerCommand("codex-usage-mode", {
@@ -588,6 +697,7 @@ export default function (pi: ExtensionAPI) {
 			if (applyingPersistedPreferences) modeChangedDuringStartupLoad = true;
 			refresher.setPercentDisplayMode(nextMode);
 			queuePersistCurrentPreferences(ctx);
+			if (!refresher.isEnabled()) return;
 			if (!refresher.renderFromLastSnapshot(ctx)) {
 				await refresher.refreshFor(ctx);
 			}
@@ -604,6 +714,7 @@ export default function (pi: ExtensionAPI) {
 			if (applyingPersistedPreferences) windowChangedDuringStartupLoad = true;
 			refresher.setResetWindowMode(nextWindow);
 			queuePersistCurrentPreferences(ctx);
+			if (!refresher.isEnabled()) return;
 			if (!refresher.renderFromLastSnapshot(ctx)) {
 				await refresher.refreshFor(ctx);
 			}
