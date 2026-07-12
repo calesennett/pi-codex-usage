@@ -1,4 +1,4 @@
-import { asObject, SPARK_MODEL_ID, windowNames, windows, type RateLimitBucket, type UsageSnapshot, type UsageWindow } from "./domain";
+import { asObject, SPARK_MODEL_ID, type RateLimitBucket, type UsageSnapshot, type UsageWindow } from "./domain";
 import { AUTH_FILE, readJsonObject } from "./preferences";
 
 const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
@@ -49,7 +49,7 @@ function resetSeconds(window: UsageWindow | null | undefined): number | null {
 
 function rateLimitBucket(value: unknown): RateLimitBucket | null {
 	const record = asObject(value);
-	return record && ("primary_window" in record || "secondary_window" in record || "limit_reached" in record || "allowed" in record)
+	return record && ("primary_window" in record || "limit_reached" in record || "allowed" in record)
 		? record as RateLimitBucket
 		: null;
 }
@@ -71,16 +71,10 @@ function selectedBucket(data: UsageResponse, modelId: string | undefined): RateL
 
 export async function getUsage(modelId: string | undefined): Promise<UsageSnapshot> {
 	const bucket = selectedBucket(await requestUsage(), modelId);
-	const snapshot: UsageSnapshot = {
-		leftPercent: { "5h": null, "7d": null },
-		resetInSeconds: { "5h": null, "7d": null },
+	const window = bucket?.primary_window;
+	return {
+		leftPercent: toPercentLeft(window?.used_percent),
+		resetInSeconds: resetSeconds(window),
 		isLimited: bucket?.limit_reached === true || bucket?.allowed === false,
 	};
-
-	for (const name of windowNames) {
-		const window = bucket?.[windows[name].field];
-		snapshot.leftPercent[name] = toPercentLeft(window?.used_percent);
-		snapshot.resetInSeconds[name] = resetSeconds(window);
-	}
-	return snapshot;
 }

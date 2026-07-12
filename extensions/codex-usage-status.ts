@@ -1,8 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { completions, parseChoice, preferenceCommands, type PreferenceCommand } from "../src/codex-usage/commands";
+import { parseUsageMode, usageModeCompletions } from "../src/codex-usage/commands";
 import { formatStatus, unavailableStatus } from "../src/codex-usage/format";
-import { loadPreferences, savePreferences, SETTINGS_FILE } from "../src/codex-usage/preferences";
-import { DEFAULT_PREFERENCES, errorMessage, type Preferences, type UsageSnapshot } from "../src/codex-usage/domain";
+import { loadUsageMode, saveUsageMode, SETTINGS_FILE } from "../src/codex-usage/preferences";
+import { DEFAULT_USAGE_MODE, errorMessage, type PercentMode, type UsageSnapshot } from "../src/codex-usage/domain";
 import { getUsage, MISSING_AUTH_ERROR } from "../src/codex-usage/usage";
 
 const EXTENSION_ID = "codex-usage";
@@ -15,9 +15,9 @@ class CodexUsageStatus {
 	private inFlight = false;
 	private queued?: { ctx: ExtensionContext; generation: number; modelId?: string };
 	private lastUsage?: UsageSnapshot;
-	private preferences: Preferences = { ...DEFAULT_PREFERENCES };
-	private preferenceRevision = 0;
-	private preferenceQueue: Promise<void> = Promise.resolve();
+	private usageMode: PercentMode = DEFAULT_USAGE_MODE;
+	private usageModeRevision = 0;
+	private settingsQueue: Promise<void> = Promise.resolve();
 
 	public constructor(private readonly pi: ExtensionAPI) {
 		pi.on("session_start", (_event, ctx) => this.start(ctx));
@@ -25,7 +25,7 @@ class CodexUsageStatus {
 		pi.on("model_select", (event, ctx) => void this.refresh(ctx, event.model.id));
 		pi.on("session_shutdown", (_event, ctx) => this.stop(ctx));
 
-		for (const command of preferenceCommands) this.registerPreferenceCommand(command);
+		this.registerUsageModeCommand();
 	}
 
 	private isCurrent(generation: number): boolean {
@@ -41,7 +41,7 @@ class CodexUsageStatus {
 
 		const generation = this.generation;
 		void (async () => {
-			await this.loadPreferences(ctx, generation);
+			await this.loadUsageMode(ctx, generation);
 			await this.refresh(ctx, ctx.model?.id, generation);
 		})();
 	}
@@ -55,23 +55,23 @@ class CodexUsageStatus {
 		if (ctx.hasUI) ctx.ui.setStatus(EXTENSION_ID, undefined);
 	}
 
-	private enqueuePreferenceOperation<T>(operation: () => Promise<T>): Promise<T> {
-		const result = this.preferenceQueue.then(operation);
-		this.preferenceQueue = result.then(() => undefined, () => undefined);
+	private enqueueSettingsOperation<T>(operation: () => Promise<T>): Promise<T> {
+		const result = this.settingsQueue.then(operation);
+		this.settingsQueue = result.then(() => undefined, () => undefined);
 		return result;
 	}
 
-	private async loadPreferences(ctx: ExtensionContext, generation: number): Promise<void> {
-		const revision = this.preferenceRevision;
+	private async loadUsageMode(ctx: ExtensionContext, generation: number): Promise<void> {
+		const revision = this.usageModeRevision;
 		try {
-			const preferences = await this.enqueuePreferenceOperation(() => loadPreferences());
-			if (this.isCurrent(generation) && this.preferenceRevision === revision) this.preferences = preferences;
+			const usageMode = await this.enqueueSettingsOperation(() => loadUsageMode());
+			if (this.isCurrent(generation) && this.usageModeRevision === revision) this.usageMode = usageMode;
 		} catch (error) {
 			if (!this.isCurrent(generation)) return;
-			const changedDuringLoad = this.preferenceRevision !== revision;
-			if (!changedDuringLoad) this.preferences = { ...DEFAULT_PREFERENCES };
+			const changedDuringLoad = this.usageModeRevision !== revision;
+			if (!changedDuringLoad) this.usageMode = DEFAULT_USAGE_MODE;
 			if (ctx.hasUI) {
-				const action = changedDuringLoad ? "keeping current preferences" : "using defaults";
+				const action = changedDuringLoad ? "keeping current mode" : "using default";
 				ctx.ui.notify(`pi-codex-usage: failed to load ${SETTINGS_FILE}, ${action}: ${errorMessage(error)}`, "warning");
 			}
 		}
@@ -90,7 +90,7 @@ class CodexUsageStatus {
 			const usage = await getUsage(modelId);
 			if (!this.isCurrent(generation)) return;
 			this.lastUsage = usage;
-			ctx.ui.setStatus(EXTENSION_ID, formatStatus(ctx, usage, this.preferences, modelId));
+			ctx.ui.setStatus(EXTENSION_ID, formatStatus(ctx, usage, this.usageMode, modelId));
 		} catch (error) {
 			if (!this.isCurrent(generation)) return;
 			if (errorMessage(error).includes(MISSING_AUTH_ERROR)) {
@@ -109,13 +109,13 @@ class CodexUsageStatus {
 
 	private renderLast(ctx: ExtensionContext): boolean {
 		if (!ctx.hasUI || !this.lastUsage) return false;
-		ctx.ui.setStatus(EXTENSION_ID, formatStatus(ctx, this.lastUsage, this.preferences, ctx.model?.id));
+		ctx.ui.setStatus(EXTENSION_ID, formatStatus(ctx, this.lastUsage, this.usageMode, ctx.model?.id));
 		return true;
 	}
 
-	private savePreferences(ctx: ExtensionContext, generation = this.generation): void {
-		const preferences = { ...this.preferences };
-		const result = this.enqueuePreferenceOperation(() => savePreferences(preferences));
+	private saveUsageMode(ctx: ExtensionContext, generation = this.generation): void {
+		const usageMode = this.usageMode;
+		const result = this.enqueueSettingsOperation(() => saveUsageMode(usageMode));
 		void result.catch(error => {
 			const notifyContext = this.ctx ?? ctx;
 			if (this.isCurrent(generation) && notifyContext.hasUI) {
@@ -124,18 +124,17 @@ class CodexUsageStatus {
 		});
 	}
 
-	private registerPreferenceCommand(command: PreferenceCommand): void {
-		this.pi.registerCommand(command.name, {
-			description: command.description,
-			getArgumentCompletions: prefix => completions(command.choices, prefix),
+	private registerUsageModeCommand(): void {
+		this.pi.registerCommand("codex-usage-mode", {
+			description: "Toggle Codex usage display mode, or set it explicitly: left | used",
+			getArgumentCompletions: usageModeCompletions,
 			handler: async (args, ctx) => {
-				const current = this.preferences[command.key];
-				const next = parseChoice(args, command.choices, current);
-				if (!next) return;
+				const usageMode = parseUsageMode(args, this.usageMode);
+				if (!usageMode) return;
 
-				this.preferenceRevision++;
-				this.preferences = { ...this.preferences, [command.key]: next } as Preferences;
-				this.savePreferences(ctx);
+				this.usageModeRevision++;
+				this.usageMode = usageMode;
+				this.saveUsageMode(ctx);
 				if (!this.renderLast(ctx)) await this.refresh(ctx);
 			},
 		});
