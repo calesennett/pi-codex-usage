@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { SPARK_MODEL_ID, windowNames, windows, type PercentMode, type Preferences, type Theme, type UsageSnapshot } from "./domain";
+import { SPARK_MODEL_ID, type PercentMode, type Theme, type UsageSnapshot } from "./domain";
 
 function modelLabel(modelId: string | undefined): string {
 	return modelId === SPARK_MODEL_ID ? "Codex Spark" : "Codex";
@@ -26,14 +26,12 @@ function formatCountdown(seconds: number | null): string | null {
 	return minutes ? `${minutes}m` : `${total % 60}s`;
 }
 
-export function formatStatus(ctx: ExtensionContext, usage: UsageSnapshot, preferences: Preferences, modelId: string | undefined): string {
+export function formatStatus(ctx: ExtensionContext, usage: UsageSnapshot, usageMode: PercentMode, modelId: string | undefined): string {
 	const theme = ctx.ui.theme;
 	const title = theme.fg(usage.isLimited ? "error" : "dim", modelLabel(modelId));
-	const usageText = windowNames
-		.map(name => `${theme.fg("dim", windows[name].label)}${formatPercent(theme, usage.leftPercent[name], preferences.usageMode)}`)
-		.join(" ");
-	const reset = formatCountdown(usage.resetInSeconds[preferences.refreshWindow]);
-	const resetText = reset ? theme.fg("dim", ` (${windows[preferences.refreshWindow].label}↺${reset})`) : "";
+	const usageText = `${theme.fg("dim", "7d:")}${formatPercent(theme, usage.leftPercent, usageMode)}`;
+	const reset = formatCountdown(usage.resetInSeconds);
+	const resetText = reset ? theme.fg("dim", ` (↺${reset})`) : "";
 	return `${title} ${usageText}${resetText}`;
 }
 

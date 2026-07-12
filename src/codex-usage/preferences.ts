@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { asObject, DEFAULT_PREFERENCES, type JsonObject, type Preferences } from "./domain";
+import { asObject, DEFAULT_USAGE_MODE, type JsonObject, type PercentMode } from "./domain";
 
 export const SETTINGS_KEY = "pi-codex-usage";
 
@@ -23,31 +23,13 @@ async function writeJson(file: string, value: unknown): Promise<void> {
 	await fs.writeFile(file, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
-function isOneOf<T extends string>(value: unknown, choices: readonly T[]): value is T {
-	return typeof value === "string" && (choices as readonly string[]).includes(value);
+export async function loadUsageMode(): Promise<PercentMode> {
+	const usageMode = asObject((await readJsonObject(SETTINGS_FILE))[SETTINGS_KEY])?.usageMode;
+	return usageMode === "left" || usageMode === "used" ? usageMode : DEFAULT_USAGE_MODE;
 }
 
-function normalizePreferences(value: unknown): Preferences {
-	const settings = asObject(value);
-	return {
-		usageMode: isOneOf(settings?.usageMode, ["left", "used"] as const) ? settings.usageMode : DEFAULT_PREFERENCES.usageMode,
-		refreshWindow: isOneOf(settings?.refreshWindow, ["5h", "7d"] as const) ? settings.refreshWindow : DEFAULT_PREFERENCES.refreshWindow,
-	};
-}
-
-export async function loadPreferences(): Promise<Preferences> {
+export async function saveUsageMode(usageMode: PercentMode): Promise<void> {
 	const settings = await readJsonObject(SETTINGS_FILE);
-	const preferences = normalizePreferences(settings[SETTINGS_KEY]);
-	const persisted = asObject(settings[SETTINGS_KEY]);
-	if (!persisted || persisted.usageMode !== preferences.usageMode || persisted.refreshWindow !== preferences.refreshWindow) {
-		settings[SETTINGS_KEY] = preferences;
-		await writeJson(SETTINGS_FILE, settings);
-	}
-	return preferences;
-}
-
-export async function savePreferences(preferences: Preferences): Promise<void> {
-	const settings = await readJsonObject(SETTINGS_FILE);
-	settings[SETTINGS_KEY] = preferences;
+	settings[SETTINGS_KEY] = { usageMode };
 	await writeJson(SETTINGS_FILE, settings);
 }

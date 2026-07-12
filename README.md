@@ -1,8 +1,8 @@
 # pi-codex-usage
 
-![pi-codex-usage screenshot](https://raw.githubusercontent.com/calesennett/pi-codex-usage/main/assets/pi-codex-usage-screen.png)
+![pi-codex-usage screenshot](https://github.com/user-attachments/assets/edb4b114-13ba-46f5-b7ab-cdcb28a8865c)
 
-Footer status extension for [pi](https://github.com/earendil-works/pi-mono/tree/main/packages/coding-agent) that shows Codex (and Codex Spark) usage windows.
+Footer status extension for [pi](https://github.com/earendil-works/pi-mono/tree/main/packages/coding-agent) that shows Codex 7-day usage.
 
 ## Install
 
@@ -15,30 +15,26 @@ pi install npm:@calesennett/pi-codex-usage
 | Command | Effect |
 | --- | --- |
 | `/codex-usage-mode` | Toggle display mode (`left` ↔ `used`). |
-| `/codex-usage-mode left` | Show percent left in each window. |
-| `/codex-usage-mode used` | Show percent used in each window. |
-| `/codex-usage-reset-window` | Toggle reset countdown window (`7d` ↔ `5h`). |
-| `/codex-usage-reset-window 7d` | Show reset countdown for the 7d window. |
-| `/codex-usage-reset-window 5h` | Show reset countdown for the 5h window. |
+| `/codex-usage-mode left` | Show percent left. |
+| `/codex-usage-mode used` | Show percent used. |
 
 ## Settings
 
-The extension persists display preferences in pi's `settings.json` under:
+The extension persists the display preference in pi's `settings.json` under:
 
 ```json
 {
   "pi-codex-usage": {
-    "usageMode": "left",
-    "refreshWindow": "7d"
+    "usageMode": "left"
   }
 }
 ```
 
 - Settings file path: `$PI_CODING_AGENT_DIR/settings.json`
-- Fallback when env var is unset: `~/.pi/agent/settings.json`
-- Defaults are written on first load: `usageMode: "left"`, `refreshWindow: "7d"`
+- Fallback when the environment variable is unset: `~/.pi/agent/settings.json`
+- The default is `usageMode: "left"`.
 
 Example outputs:
 
-- `/codex-usage-mode left` → `Codex 5h:81% left 7d:64% left (7d:↺22h28m)`
-- `/codex-usage-mode used` → `Codex 5h:19% used 7d:36% used (7d:↺22h28m)`
+- `/codex-usage-mode left` → `Codex 7d:97% left (↺6d22h)`
+- `/codex-usage-mode used` → `Codex 7d:3% used (↺6d22h)`
