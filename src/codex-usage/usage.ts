@@ -49,7 +49,7 @@ function resetSeconds(window: UsageWindow | null | undefined): number | null {
 
 function rateLimitBucket(value: unknown): RateLimitBucket | null {
 	const record = asObject(value);
-	return record && ("primary_window" in record || "limit_reached" in record || "allowed" in record)
+	return record && ("primary_window" in record || "secondary_window" in record || "limit_reached" in record || "allowed" in record)
 		? record as RateLimitBucket
 		: null;
 }
@@ -69,12 +69,19 @@ function selectedBucket(data: UsageResponse, modelId: string | undefined): RateL
 	return null;
 }
 
-export async function getUsage(modelId: string | undefined): Promise<UsageSnapshot> {
-	const bucket = selectedBucket(await requestUsage(), modelId);
-	const window = bucket?.primary_window;
+function windowUsage(window: UsageWindow | null | undefined) {
 	return {
 		leftPercent: toPercentLeft(window?.used_percent),
 		resetInSeconds: resetSeconds(window),
+	};
+}
+
+export async function getUsage(modelId: string | undefined): Promise<UsageSnapshot> {
+	const bucket = selectedBucket(await requestUsage(), modelId);
+	const secondaryWindow = bucket?.secondary_window;
+	return {
+		...(secondaryWindow ? { fiveHour: windowUsage(bucket?.primary_window) } : {}),
+		sevenDay: windowUsage(secondaryWindow ?? bucket?.primary_window),
 		isLimited: bucket?.limit_reached === true || bucket?.allowed === false,
 	};
 }
