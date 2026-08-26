@@ -29,10 +29,15 @@ function formatCountdown(seconds: number | null): string | null {
 export function formatStatus(ctx: ExtensionContext, usage: UsageSnapshot, usageMode: PercentMode, modelId: string | undefined): string {
 	const theme = ctx.ui.theme;
 	const title = theme.fg(usage.isLimited ? "error" : "dim", modelLabel(modelId));
-	const usageText = `${theme.fg("dim", "7d:")}${formatPercent(theme, usage.leftPercent, usageMode)}`;
-	const reset = formatCountdown(usage.resetInSeconds);
-	const resetText = reset ? theme.fg("dim", ` (↺${reset})`) : "";
-	return `${title} ${usageText}${resetText}`;
+	const usageText = [
+		...(usage.fiveHour ? [{ label: "5h:", usage: usage.fiveHour }] : []),
+		{ label: "7d:", usage: usage.sevenDay },
+	].map(window => {
+		const reset = formatCountdown(window.usage.resetInSeconds);
+		const resetText = reset ? theme.fg("dim", ` (↺${reset})`) : "";
+		return `${theme.fg("dim", window.label)}${formatPercent(theme, window.usage.leftPercent, usageMode)}${resetText}`;
+	}).join(" ");
+	return `${title} ${usageText}`;
 }
 
 export function unavailableStatus(ctx: ExtensionContext, modelId: string | undefined): string {

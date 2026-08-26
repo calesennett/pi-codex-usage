@@ -14,11 +14,17 @@ export type RateLimitBucket = {
 	allowed?: boolean;
 	limit_reached?: boolean;
 	primary_window?: UsageWindow | null;
+	secondary_window?: UsageWindow | null;
+};
+
+export type WindowUsage = {
+	leftPercent: number | null;
+	resetInSeconds: number | null;
 };
 
 export type UsageSnapshot = {
-	leftPercent: number | null;
-	resetInSeconds: number | null;
+	fiveHour?: WindowUsage;
+	sevenDay: WindowUsage;
 	isLimited: boolean;
 };
 
