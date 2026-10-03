@@ -10,6 +10,10 @@ Footer status extension for [pi](https://github.com/earendil-works/pi-mono/tree/
 pi install npm:@calesennett/pi-codex-usage
 ```
 
+## Authentication
+
+Sign in to `openai-codex` in pi (`/login openai-codex`). The footer shows usage for this account, not the `openai` account. If you use multiple accounts, sign in to both providers with the same account.
+
 ## Commands
 
 | Command | Effect |
