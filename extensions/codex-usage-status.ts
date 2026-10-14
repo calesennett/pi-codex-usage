@@ -42,6 +42,11 @@ class CodexUsageStatus {
 		const generation = this.generation;
 		void (async () => {
 			await this.loadUsageMode(ctx, generation);
+
+			if (!this.isCurrent(generation)) {
+				return;
+			}
+
 			await this.refresh(ctx, ctx.model?.id, generation);
 		})();
 	}
